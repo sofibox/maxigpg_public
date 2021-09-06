@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==================================================
 _APP_SPECIFIC_NAME="MaxiGPG"
-_APP_VERSION="0.3.3"
+_APP_VERSION="0.3.4"
 _APP_STATUS="beta"
 _APP_INFO="${_APP_SPECIFIC_NAME} is a bash script CLI extension to manage
 GPG encryption key with extra features.
@@ -23,6 +23,10 @@ _AUTHOR="Author: Arafat Ali | Email: arafat@sofibox.com | (C) 2019-2021"
 # This is very useful if you have scripts that need to use gpg encryption or decryption automatically. You can set expired time for the cached passphrase for security
 # This is the example of real use case discussion for using gpg-agent with rclone: https://forum.rclone.org/t/rclone-mount-with-configuration-password/573
 # TODO 1: send log files to onedrive cloud
+# TODO 2: Next version will support multiple key cache in one gpg-agent process
+#######################
+# FUNCTION START HERE #
+#######################
 
 # This function save configuration files with variable assignment pattern for GPG_CONFIG
 function set_config() {
@@ -61,15 +65,14 @@ function show_time() {
 
 # This function show gpg-agent run status
 function gpg_runstatus() {
+  echo "[${SCRIPT_NAME}]: Systemd service details:"
+  echo ""
   systemctl --user --no-pager status gpg-agent
   echo ""
+  echo "[${SCRIPT_NAME}]: PID output:"
   get_pid_output
   echo ""
 }
-
-#######################
-# FUNCTION START HERE #
-#######################
 
 # This function output PID information for one or more gpg-agents
 function get_pid_output() {
