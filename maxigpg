@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==================================================
 _APP_SPECIFIC_NAME="MaxiGPG"
-_APP_VERSION="0.3.2"
+_APP_VERSION="0.3.3"
 _APP_STATUS="beta"
 _APP_INFO="${_APP_SPECIFIC_NAME} is a bash script CLI extension to manage
 GPG encryption key with extra features.
@@ -65,36 +65,11 @@ function gpg_runstatus() {
   echo ""
   get_pid_output
   echo ""
-  gpg_show_valid_info
 }
 
 #######################
 # FUNCTION START HERE #
 #######################
-
-# This function show valid information about cached passphrase
-function gpg_show_valid_info() {
-  local date_cached second_to_expired expired_date second_left
-
-  source "${GPG_CONFIG}"
-  # Must convert this to UTC date if not will get error
-  date_cached=$(date -u -d @"${C_DATE_CACHED}")
-  #echo "date_cached: ${date_cached}"
-  second_to_expired=$(grep "^C_EXPIRED_TIMESTAMP=" "${GPG_CONFIG}" | cut -d= -f2)
-  #echo "second_to_expired: ${second_to_expired}"
-  expired_date=$(date -u -d "${date_cached} + ${second_to_expired} seconds")
-  #echo "expired_date: ${expired_date}"
-  second_left="$(($(date -d "$expired_date" "+%s") - $(date +%s)))"
-  #echo "second_left: ${second_left}"
-  echo "[${SCRIPT_NAME}]: The passphrase is valid with the following information:"
-  echo "------------------------------"
-  echo "Valid since: [$(date -d @"${C_DATE_CACHED}")]"
-  echo "Valid for: [$(show_time "${second_to_expired}")]"
-  echo "Expired on: [$(date -d "${expired_date}")]"
-  echo "Expired in: [$(show_time ${second_left})]"
-  echo "------------------------------"
-
-}
 
 # This function output PID information for one or more gpg-agents
 function get_pid_output() {
@@ -146,6 +121,7 @@ function get_gpg_pid_count() {
 # This is a standalone function to display script usage
 # Usage: maxigpg --help
 function usage() {
+  local usage_file
   usage_file="${SCRIPT_PATH}/readme.txt"
   if [ -f "${usage_file}" ]; then
     cat "${SCRIPT_PATH}/readme.txt"
@@ -242,13 +218,71 @@ function gpg_init() {
 
 }
 
-function gpg_validate_pass() {
+function gpg_show_valid_info() {
+  local retval key_id key_pass
+  key_id="$1"
+  source "${GPG_CONFIG}"
+  if [ -z "${KEY_ID}" ]; then
+    if [ -n "${key_id}" ]; then
+      KEY_ID="${key_id}"
+    else
+      # If no KEY_ID is supplied, we use the C_CACHED_KEY_ID from the config file
+      if [ -n "${C_CACHED_KEY_ID}" ]; then
+        KEY_ID="${C_CACHED_KEY_ID}"
+      else
+        echo "[${SCRIPT_NAME}]: Error, KEY_ID is empty. You might need to cache the passphrase first"
+        exit 1
+      fi
+    fi
+  fi
+  # The option --passphrase-fd 0 is to avoid the script from asking passphrase, because here we just want to validate
+  # To cache passphrase we use gpg_key_in_pass() instead
+  key_pass=$(echo "1234" | gpg -q --pinentry-mode=loopback --status-fd 1 --sign --local-user "${KEY_ID}" --passphrase-fd 0 2>&1 >/dev/null)
+  retval=$?
+
+  if [ ${retval} -eq 0 ]; then
+    if [ -n "${C_DATE_CACHED}" ]; then
+      # Must convert this to UTC date if not will get error
+      date_cached=$(date -u -d @"${C_DATE_CACHED}")
+      #echo "date_cached: ${date_cached}"
+      second_to_expired=$(grep "^C_EXPIRED_TIMESTAMP=" "${GPG_CONFIG}" | cut -d= -f2)
+      #echo "second_to_expired: ${second_to_expired}"
+      expired_date=$(date -u -d "${date_cached} + ${second_to_expired} seconds")
+      #echo "expired_date: ${expired_date}"
+      second_left="$(($(date -d "$expired_date" "+%s") - $(date +%s)))"
+      #echo "second_left: ${second_left}"
+      echo "[${SCRIPT_NAME}]: The passphrase is valid with the following information:"
+      echo "------------------------------"
+      echo "Valid since: [$(date -d @"${C_DATE_CACHED}")]"
+      echo "Valid for: [$(show_time "${second_to_expired}")]"
+      echo "Expired on: [$(date -d "${expired_date}")]"
+      echo "Expired in: [$(show_time ${second_left})]"
+      echo "------------------------------"
+    else
+      echo "Error, C_DATE_CACHED is empty in ${GPG_CONFIG}!"
+      echo "You might need to cache the passphrase first with valid KEY_ID. eg ${SCRIPT_NAME} setkey --key <KEY_ID>"
+      exit 1
+    fi
+  else
+    echo "Error, invalid passphrase cached in gpg-agent!"
+    echo "You might need to cache a passphrase first with valid KEY_ID. eg ${SCRIPT_NAME} setkey --key <KEY_ID>"
+    echo "Error details:"
+    echo "${key_pass}"
+    exit 1
+  fi
+}
+
+# Always clear GPG first (this will cache new passphrase even it is cached before)
+function gpg_key_in_pass() {
   local retval
   if [ -z "${KEY_ID}" ]; then
     echo "[${SCRIPT_NAME}]: Error, KEY_ID is empty"
     exit 1
   fi
-  echo "[${SCRIPT_NAME}]: Validating GPG passphrase ..."
+  # Clear the previous cache:
+  systemctl --user restart gpg-agent
+
+  echo "[${SCRIPT_NAME}]: Key in GPG passphrase for key ID ${KEY_ID}: "
   # It is important to set gpg passphrase first before validate
   echo "------"
   #echo "1234" | gpg -q --pinentry-mode=loopback --status-fd 1 --sign --local-user "${KEY_ID}" --passphrase-fd 0 > /dev/null
@@ -263,8 +297,9 @@ function gpg_validate_pass() {
     set_config C_EXPIRED_TIMESTAMP "$(grep -oP 'max-cache-ttl\s*\K\d+' "${GPG_AGENT_CONF_FILE}")" "${GPG_CONFIG}"
     # Source the file
     source "${GPG_CONFIG}"
-    gpg_show_valid_info
+    gpg_show_valid_info "${KEY_ID}"
   else
+
     echo "[${SCRIPT_NAME}]: Error, invalid passphrase is cached in gpg-agent. Validation return code: [${retval}]"
     # gpg_clearpass # This is only useful when using manual preset key in
 
@@ -275,7 +310,8 @@ function gpg_validate_pass() {
       #$MAIL_BIN -s "[${SCRIPT_NAME} | ${WARN_STATUS}]: Warning, gpg-agent has no cached passphrase!" "${ADMIN_EMAIL}" <"${REPORT_FILE}"
       exit 1
     else
-      gpg_validate_pass
+      :
+      #gpg_key_in_passphrase
     fi
 
   fi
@@ -356,7 +392,7 @@ DATE_TIME_NOW="$(date '+%d-%m-%Y_%H-%M-%S')" #31-08-2021_11-56-16
 REPORT_FILE="${LOG_PATH}/${SCRIPT_NAME}-${DATE_TIME_NOW}-report.log"
 cat /dev/null >"${REPORT_FILE}"
 
-# export GPG_TTY and create this in .profile
+# export GPG_TTY and create this in .profile if it does not exist
 GPG_TTY=$(tty)
 export GPG_TTY
 HAS_GPG_TTY_EXPORT=$(grep "^export GPG_TTY=" "${HOME}/.profile")
@@ -392,7 +428,6 @@ while [ "$#" -gt 0 ]; do
     ;;
   -t | --test)
     echo "This is a test"
-    gpg_show_valid_info
     exit 0
     break
     ;;
@@ -409,7 +444,10 @@ while [ "$#" -gt 0 ]; do
     break
     ;;
   status | -s | --status)
-    gpg_runstatus "${KEY_ID}"
+    KEY_ID="$2"
+    gpg_runstatus
+    gpg_show_valid_info "${KEY_ID}"
+    exit 0
     break
     ;;
   init | --init | --initialize)
@@ -418,7 +456,6 @@ while [ "$#" -gt 0 ]; do
     ;;
   # maxigpg setkey --key <KEY_ID>
   setkey | setpass | setpassword | -k | --key | --setkey | --setpass | --setpassword)
-    OPT="$1"
     SHORT_OPTS="k:,c,v"
     LONG_OPTS="key:,key-id:,cron,cronjob,verbose"
     OPTIONS=$(getopt -o "${SHORT_OPTS}" --long "${LONG_OPTS}" -n "[${SCRIPT_NAME}]" -- "$@")
@@ -487,7 +524,7 @@ while [ "$#" -gt 0 ]; do
 
     fi
 
-    gpg_validate_pass
+    gpg_key_in_pass
 
     exit 0
     break
