@@ -1,5 +1,5 @@
 
-Maxi GPG Documentation
+Maxi GPG Documentation (this readme is deprecated update later)
 
 Author: Arafat Ali | Email: arafat@sofibox.com | (C) 2019-2021
 
