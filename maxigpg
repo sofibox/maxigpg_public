@@ -2,7 +2,7 @@
 #"=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~="
 # ==================================================
 _APP_SPECIFIC_NAME="MaxiGPG"
-_APP_VERSION="0.3.5"
+_APP_VERSION="0.3.6"
 _APP_STATUS="beta"
 _APP_INFO="${_APP_SPECIFIC_NAME} is a bash script CLI extension to manage
 GPG encryption key with extra features.
@@ -586,7 +586,7 @@ init_gpg_config() {
       echo "Requires=gpg-agent.socket"
       echo ""
       echo "[Service]"
-      echo "ExecStart=/usr/bin/gpg-agent --options ${HOME}/.gnupg/gpg-agent.conf --supervised"
+      echo "ExecStart=/usr/bin/gpg-agent --options ${GPG_AGENT_CONFIG_FILE} --supervised"
       echo "ExecReload=/usr/bin/gpgconf --reload gpg-agent"
     } >"${GPG_AGENT_SERVICE_FILE}"
     status_handler check --code "$?" --print-success
@@ -625,15 +625,14 @@ init_gpg_config() {
   status_handler check --code "$?" --print-success
 }
 
-# This function is used to import a GPG key
-# Usage: import_gpg_key--key-file <key_file> --passphrase <passphrase>
-# Example: import_gpg_key --key-file "${HOME}/.gnupg/keys/secret.asc" --passphrase "my_passphrase"
-# If the key is encrypted, it will unlock it with the given passphrase
-# To completely trust the key, use the option --trust-key
-# To test the imported key, use the option --test-key
-import_gpg_key() {
-  local caller
+# This function is used to test GPG key
+# Usage: test_gpg_key --duration 10 --email arafat@sofibox.com --passphrase "123456"
+
+test_gpg_key() {
+  local caller test_file retval
+
   caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
+  test_file="${SECURE_PATH}/$(random_string 8)"
 
   [[ -z "${_PRIMARY_KEY_TYPE}" ]] && _PRIMARY_KEY_TYPE="RSA"
   [[ -z "${_PRIMARY_KEY_SIZE}" ]] && _PRIMARY_KEY_SIZE="4096"
@@ -641,8 +640,101 @@ import_gpg_key() {
   [[ -z "${_SUB_KEY_SIZE}" ]] && _SUB_KEY_SIZE="4096"
   [[ -z "${_EXPIRE_DATE}" ]] && _EXPIRE_DATE="0"
   [[ -z "${_KEY_OWNER_NAME}" ]] && _KEY_OWNER_NAME=$(getent passwd "${USER}" | cut -d: -f5 | cut -d, -f1)
-  [[ -z "${_KEY_OWNER_EMAIL}" ]] && _KEY_OWNER_EMAIL="${USER}@$(hostname)"
+  # If user full name is blank, then use the current user
+  if [ -z "${_KEY_OWNER_NAME}" ]; then
+    _KEY_OWNER_NAME="${USER}"
+  fi
   [[ -z "${_KEY_COMMENT}" ]] && _KEY_COMMENT="GPG key for ${USER}"
+  [[ -z "${_KEY_PASSPHRASE}" ]] && _KEY_PASSPHRASE=""
+  [[ -z "${_KEY_TRUST_LEVEL}" ]] && _KEY_TRUST_LEVEL="1"
+  [[ -z "${_TEST_KEY}" ]] && _TEST_KEY=false
+  [[ -z "${_GPG_CACHE_DURATION}" ]] && _GPG_CACHE_DURATION="10"
+
+  if [[ -z "${_KEY_OWNER_EMAIL}" ]]; then
+    echo "[${caller}]: The key owner email is empty, please use --email option to set it."
+    exit 1
+  fi
+
+  if [[ -z "${_KEY_PASSPHRASE}" ]]; then
+    echo "[${caller}]: The key passphrase is empty, please use --passphrase option to set it."
+    exit 1
+  fi
+
+  echo "[${caller}]: Testing the GPG key by encrypting a dummy file ..."
+  echo "This is a test file" >"${test_file}"
+  # We put --trust-model always to avoid the prompt for the passphrase
+  gpg --trust-model always --encrypt --recipient "${_KEY_OWNER_EMAIL}" "${test_file}"
+  rm -f "${test_file}.asc" && gpg --trust-model always --verbose -e -a -r "${_KEY_OWNER_EMAIL}" "${test_file}"
+  status_handler check --code="$?" --print-success
+  echo ""
+
+  echo "[${caller}]: Setting up GPG cache duration ..."
+  set_gpg_cache_duration "${_GPG_CACHE_DURATION}"
+  echo ""
+  echo "[${caller}]: Testing the GPG key by decrypting the dummy file ..."
+  rm -f "${test_file}" && gpg --pinentry-mode=loopback --passphrase "${_KEY_PASSPHRASE}" --output "${test_file}" --decrypt "${test_file}.asc" >/dev/null
+  retval="$?"
+
+  echo "[${caller}]: Testing the GPG cache duration ..."
+
+  if [ "${retval}" -eq 0 ]; then
+    local test_elapsed
+    echo "[${caller}]: OK, GPG decryption test is successful."
+    echo ""
+    echo "[${caller}]: Notice, the passphrase is cached in GPG agent with PID $(pidof gpg-agent)."
+    echo ""
+    test_elapsed=1
+
+    while :; do
+      rm -f "${test_file}"
+      echo "[${caller}]: Testing GPG decryption cache with value less than ${_GPG_CACHE_DURATION} seconds ..."
+      echo 123 | gpg -q --pinentry-mode=loopback --passphrase-fd 0 --output "${test_file}" -d "${test_file}.asc" 2>/dev/null
+      retval=$?
+      if [ "${retval}" -ne 0 ]; then
+        echo ""
+        echo "[${caller}]: OK, passphrase cache was expired based on the value of ${_GPG_CACHE_DURATION} seconds."
+        break
+      else
+        if [ "${test_elapsed}" -eq ${_GPG_CACHE_DURATION} ]; then
+          echo ""
+          echo "[${caller}]: Error, passphrase cache was not expired based on the value of ${_GPG_CACHE_DURATION} seconds."
+          echo "[${caller}]: Removing the test file ..."
+          rm -f "${test_file}" "${test_file}.gpg" "${test_file}.asc"
+          _exit 1
+        fi
+      fi
+      sleep 1
+      ((test_elapsed++))
+    done
+
+    #Any files that were encrypted using the newly created cert above can be unlocked automatically without passphrase
+    # The cache passphrase has duration of ${_GPG_CACHE_DURATION} second(s) based on config file ${GPG_AGENT_CONFIG_FILE}
+    # The new passphrase will be cached in gpg-agent on PID $(systemctl --user show --property MainPID --value gpg-agent)"
+    # Note I can use API to kill this gpg process (such as da_api_admin; the service variable). So that the password will not be used by other app
+    echo "[${caller}]: OK, GPG key is ready to use."
+    echo "[${caller}]: Removing the test file ..."
+    rm -f "${test_file}" "${test_file}.gpg" "${test_file}.asc"
+  else
+    echo "[${caller}]: Error, GPG decryption test is failed."
+    echo "[${caller}]: Removing the test file ..."
+    rm -f "${test_file}" "${test_file}.gpg" "${test_file}.asc"
+    _exit 1
+  fi
+
+}
+
+# This function is used to import a GPG key
+# Usage: import_gpg_key--key-file <key_file> --passphrase <passphrase>
+# Example: import_gpg_key --key-file "${HOME}/.gnupg/keys/secret.asc" --passphrase "my_passphrase"
+# If the key is encrypted, it will unlock it with the given passphrase
+# To completely trust the key, use the option --trust-key
+# To test the imported key, use the option --test-key
+# You also need to pass the key owner email address to the option --key-owner-email
+
+import_gpg_key() {
+  local caller
+  caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
+
   [[ -z "${_KEY_PASSPHRASE}" ]] && _KEY_PASSPHRASE=""
   [[ -z "${_KEY_TRUST_LEVEL}" ]] && _KEY_TRUST_LEVEL="1"
   [[ -z "${_TEST_KEY}" ]] && _TEST_KEY=false
@@ -652,6 +744,13 @@ import_gpg_key() {
     echo "[${caller}]: Error, GPG key file ${_GPG_KEY_FILE} is not exist. Please use --key-file option to specify the valid key file."
     _exit 1
   fi
+
+  # Check if the key owner email is given
+  if [ -z "${_KEY_OWNER_EMAIL}" ]; then
+    echo "[${caller}]: Error, GPG key owner email is not given. Please use --email option to specify the valid key owner email."
+    _exit 1
+  fi
+
   echo "[${caller}]: Importing a GPG key from ${_GPG_KEY_FILE} ..."
   if [ -n "${_KEY_PASSPHRASE}" ]; then
     echo "[${caller}]: Unlocking GPG key ${_GPG_KEY_FILE}"
@@ -682,28 +781,36 @@ import_gpg_key() {
     echo ""
   fi
 
-  if [[ "${_TEST_KEY}" == "true" ]]; then
-    local test_file
-    test_file="${SECURE_PATH}/$(random_string 8)"
-    echo "[${caller}]: Testing the GPG key by encrypting a dummy file ..."
-    echo "This is a test file" >"${test_file}"
-    # We put --trust-model always to avoid the prompt for the passphrase
-    gpg --trust-model always --encrypt --recipient "${_KEY_OWNER_EMAIL}" "${test_file}"
-    rm -f "${test_file}.asc" && gpg --trust-model always --verbose -e -a -r "${_KEY_OWNER_EMAIL}" "${test_file}"
-    status_handler check --code="$?" --print-success
+  if [ "${_TEST_KEY}" == "true" ]; then
+    echo "[${caller}]: Testing GPG key ..."
     echo ""
-    echo "[${caller}]: Testing the GPG key by decrypting the dummy file ..."
-    rm -f "${test_file}" && gpg --pinentry-mode=loopback --passphrase "${_KEY_PASSPHRASE}" --output "${test_file}" --decrypt "${test_file}.asc" >/dev/null
-    status_handler check --code="$?" --print-success
-    echo ""
-    # Testing GPG cache duration
-    echo "[${caller}]: Testing GPG cache duration ..."
-
-    # TODO GPG cache duration test here
-
-    echo "[${caller}]: Removing the dummy file ..."
-    rm -f "${test_file}" "${test_file}.gpg"
+    test_gpg_key
   fi
+
+}
+
+# This function is used to set gpg cache duration in config file
+# Usage: set_gpg_cache_duration --duration <duration>
+set_gpg_cache_duration() {
+  local caller retval
+  caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
+
+  if [ -z "${_GPG_CACHE_DURATION}" ]; then
+    echo "[${caller}]: Error, please use --duration option to specify the duration of the passphrase cache."
+    _exit 1
+  fi
+
+  echo "[${caller}]: Configuring GPG config to cache passphrase for ${_GPG_CACHE_DURATION} seconds ..."
+  {
+    echo "allow-preset-passphrase"
+    echo "default-cache-ttl ${_GPG_CACHE_DURATION}"
+    echo "max-cache-ttl ${_GPG_CACHE_DURATION}"
+  } >"${GPG_AGENT_CONFIG_FILE}"
+  status_handler check --code "$?" --print-success
+  echo ""
+  echo "[${caller}]: Reloading GPG agent ..."
+  systemctl --user reload gpg-agent
+  status_handler check --code "$?" --print-success
 
 }
 
@@ -729,6 +836,10 @@ create_gpg_key() {
   [[ -z "${_SUB_KEY_SIZE}" ]] && _SUB_KEY_SIZE="4096"
   [[ -z "${_EXPIRE_DATE}" ]] && _EXPIRE_DATE="0"
   [[ -z "${_KEY_OWNER_NAME}" ]] && _KEY_OWNER_NAME=$(getent passwd "${USER}" | cut -d: -f5 | cut -d, -f1)
+  # If user full name is blank, then use the current user
+  if [ -z "${_KEY_OWNER_NAME}" ]; then
+    _KEY_OWNER_NAME="${USER}"
+  fi
   [[ -z "${_KEY_OWNER_EMAIL}" ]] && _KEY_OWNER_EMAIL="${USER}@$(hostname)"
   [[ -z "${_KEY_COMMENT}" ]] && _KEY_COMMENT="GPG key for ${USER}"
   [[ -z "${_KEY_PASSPHRASE}" ]] && _KEY_PASSPHRASE=""
@@ -738,11 +849,6 @@ create_gpg_key() {
   if [ -z "${_KEY_PASSPHRASE}" ]; then
     echo "[${caller}]: Error, GPG passphrase is not set. Please set it with --passphrase"
     _exit 1
-  fi
-
-  # If user full name is blank, then use the current user
-  if [ -z "${_KEY_OWNER_NAME}" ]; then
-    _KEY_OWNER_NAME="${USER}"
   fi
 
   if ! [ -d "${GPG_HOME_DIR}" ]; then
@@ -871,12 +977,11 @@ set_gpg_passphrase() {
 # This function is used to clear GPG passphrase
 # Usage: clear_gpg_passphrase
 clear_gpg_passphrase() {
-   caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
-   echo "[${caller}]: Clearing passphrase by restarting gpg-agent ..."
-   systemctl --user restart gpg-agent.service
-   status_handler check --code "$?" --print-success
+  caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
+  echo "[${caller}]: Clearing passphrase by restarting gpg-agent ..."
+  systemctl --user restart gpg-agent.service
+  status_handler check --code "$?" --print-success
 }
-
 
 ############################
 # MAIN FUNCTION START HERE #
@@ -894,7 +999,7 @@ SCRIPT_INSTALL_PATH="/usr/local/maxicode/${SCRIPT_NAME}"
 SHORT_OPT_SPECS=":l:h-:"
 LONG_OPT_SPECS=(["primary-key-type"]=1 ["primary-key"]=1 ["primary-key-size"]=1 ["primary-key"]=1 ["sub-key-type"]=1 ["sub-key"]=1
   ["sub-key-size"]=1 ["sub-key"]=1 ["name"]=1 ["email"]=1 ["comment"]=1 ["passphrase"]=1 ["trust-level"]=1 ["key-id"]=1 ["file"]=1
-  ["key-file"]=1 ["unlock-key"]=1)
+  ["key-file"]=1 ["unlock-key"]=1 ["duration"]=1)
 INDEX=$(($# + 1))
 
 ACTION="$1"
@@ -924,7 +1029,7 @@ _KEY_GRIP=""
 _TEST_KEY=""
 _GPG_KEY_FILE=""
 _UNLOCK_GPG_KEY=
-
+_GPG_CACHE_DURATION=""
 # Show error if not argument is passed or empty
 if [ ${ARGNUM} -eq 0 ]; then
   echo "[${SCRIPT_NAME}]: Error, no argument is supplied. Use [ ${SCRIPT_NAME} --help ] to see the valid options"
@@ -1021,6 +1126,9 @@ while getopts "${SHORT_OPT_SPECS}" OPTION; do
       ;;
     unlock | unlock-key)
       _UNLOCK_GPG_KEY=true
+      ;;
+    duration)
+      _GPG_CACHE_DURATION="${OPTARG[0]}"
       ;;
     ?)
       echo "[${SCRIPT_NAME}]: Syntax error: Unknown short option '${OPTARG[0]}'"
@@ -1147,6 +1255,10 @@ elif [[ "${ACTION^^}" == +(SET|KEYIN|SET-KEY|SET-GPG-KEY) ]]; then
   set_gpg_passphrase "$@"
   RETVAL=$?
   _exit ${RETVAL}
+elif [[ "${ACTION^^}" == +(SET-CACHE-DURATION|SET-GPG-CACHE-DURATION) ]]; then
+  set_gpg_cache_duration "$@"
+  RETVAL=$?
+  _exit ${RETVAL}
 
 elif
   [[ "${ACTION^^}" == +(CLEAR|KEYOUT|CLEARKEY|CLEARKEYPASS|CLEARKEYPASSPHRASE|CLEARPASS|CLEARPASSWORD) ]]
@@ -1154,6 +1266,11 @@ then
   clear_gpg_passphrase "$@"
   RETVAL=$?
   _exit ${RETVAL}
+elif
+  [[ "${ACTION^^}" == +(TEST-KEY) ]]
+then
+  test_gpg_key "$@"
+  RETVAL=$?
 
 elif [[ "${ACTION^^}" == +(SHOW-SCRIPT-PATH|GET-SCRIPT-PATH|SCRIPT-PATH) ]]; then
   echo "${SCRIPT_PATH}"
