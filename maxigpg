@@ -2,7 +2,7 @@
 #"=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~="
 # ==================================================
 _APP_SPECIFIC_NAME="MaxiGPG"
-_APP_VERSION="0.3.6"
+_APP_VERSION="0.3.7"
 _APP_STATUS="beta"
 _APP_INFO="${_APP_SPECIFIC_NAME} is a bash script CLI extension to manage
 GPG encryption key with extra features.
@@ -724,12 +724,12 @@ test_gpg_key() {
 }
 
 # This function is used to import a GPG key
-# Usage: import_gpg_key--key-file <key_file> --passphrase <passphrase>
+# Usage: import_gpg_key --key-file <key_file> --passphrase <passphrase> --email <email>
 # Example: import_gpg_key --key-file "${HOME}/.gnupg/keys/secret.asc" --passphrase "my_passphrase"
 # If the key is encrypted, it will unlock it with the given passphrase
 # To completely trust the key, use the option --trust-key
 # To test the imported key, use the option --test-key
-# You also need to pass the key owner email address to the option --key-owner-email
+# You also need to pass the key owner email address using the option --email
 
 import_gpg_key() {
   local caller
@@ -784,7 +784,7 @@ import_gpg_key() {
   if [ "${_TEST_KEY}" == "true" ]; then
     echo "[${caller}]: Testing GPG key ..."
     echo ""
-    test_gpg_key
+    test_gpg_key --duration 10 --email "${_KEY_OWNER_EMAIL}" --passphrase "${_KEY_PASSPHRASE}"
   fi
 
 }
