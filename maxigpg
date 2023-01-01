@@ -2,7 +2,7 @@
 #"=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~="
 # ==================================================
 _APP_SPECIFIC_NAME="MaxiGPG"
-_APP_VERSION="0.3.7"
+_APP_VERSION="0.3.8"
 _APP_STATUS="beta"
 _APP_INFO="${_APP_SPECIFIC_NAME} is a bash script CLI extension to manage
 GPG encryption key with extra features.
@@ -808,8 +808,13 @@ set_gpg_cache_duration() {
   } >"${GPG_AGENT_CONFIG_FILE}"
   status_handler check --code "$?" --print-success
   echo ""
-  echo "[${caller}]: Reloading GPG agent ..."
-  systemctl --user reload gpg-agent
+
+  echo "[${caller}]: Stopping GPG agent ..."
+  systemctl --user stop gpg-agent
+  status_handler check --code "$?" --print-success
+
+  echo "[${caller}]: Starting GPG agent ..."
+  systemctl --user start gpg-agent
   status_handler check --code "$?" --print-success
 
 }
