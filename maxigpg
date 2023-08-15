@@ -55,9 +55,9 @@ _return() {
 }
 
 # This function is used to confirm the next action.
-# Usage: _confirm [message] [default-response]
-# Example: _confirm "Do you want to continue?" "y"
-_confirm() {
+# Usage: _ask [message] [default-response]
+# Example: _ask "Do you want to continue?" "y"
+_ask() {
   local text default_response
   text=$1
   default_response=$2
@@ -162,7 +162,7 @@ check_update() {
   echo ""
   if [[ "ok" == "$(echo | awk "(${available_version} > ${this_version}) { print \"ok\"; }")" ]]; then
     echo "[${caller}]: A new version of ${SCRIPT_NAME} is available."
-    _confirm "[${caller}->input]: Do you want to update ${SCRIPT_NAME} to version ${available_version}?" "y"
+    _ask "[${caller}->input]: Do you want to update ${SCRIPT_NAME} to version ${available_version}?" "y"
     script_update "${SCRIPT_INSTALL_PATH}"
   elif [[ "ok" == "$(echo | awk "(${available_version} == ${this_version}) { print \"ok\"; }")" ]]; then
     echo "[${caller}]: You are using the latest version of ${SCRIPT_NAME}."
@@ -220,6 +220,7 @@ navigate_to() {
 # It will not do anything if the required package exist
 # Usage: required_packages [package(s)]
 # Example: required_packages curl wget git
+# TODO transform this into maxibuild script (might not use anymore because other script also depends on this)
 required_packages() {
 
   local required_cmds="$*" detect_by missing_count install_success install_failed retval
@@ -252,11 +253,11 @@ required_packages() {
       echo ""
 
       if [ "${required_cmd}" == "mail" ]; then
-        _confirm "Do you want to install mailutils?"
+        _ask "Do you want to install mailutils?"
         apt-get -y install mailutils
         retval=$?
       elif [ "${required_cmd}" == "ipcalc" ]; then
-        _confirm "Do you want to install ipcalc and its components?"
+        _ask "Do you want to install ipcalc and its components?"
         echo "[${SCRIPT_NAME}]: Installing required packages to build ipcalc"
         sudo apt-get -y install git gcc meson
         echo "[${SCRIPT_NAME}]: Removing existing ipcalc ..."
@@ -505,7 +506,7 @@ init_gpg_config() {
   caller="${SCRIPT_NAME}->${FUNCNAME[0]}"
 
   if [ "${WITHOUT_PROMPT}" == "false" ]; then
-    _confirm "[${caller}->input]: Warning, this will delete all existing GPG keys and configuration. Do you want to continue?" n
+    _ask "[${caller}->input]: Warning, this will delete all existing GPG keys and configuration. Do you want to continue?" n
   fi
 
   echo "[${caller}]: Stopping gpg-agent ..."
@@ -1001,7 +1002,7 @@ SCRIPT_PATH="$(dirname "$(readlink -f "$0")")"
 SCRIPT_NAME=$(basename -- "$0")
 SCRIPT_INSTALL_PATH="/usr/local/maxicode/${SCRIPT_NAME}"
 
-SHORT_OPT_SPECS=":l:h-:"
+SHORT_OPT_SPECS=":hvs-:"
 LONG_OPT_SPECS=(["primary-key-type"]=1 ["primary-key"]=1 ["primary-key-size"]=1 ["primary-key"]=1 ["sub-key-type"]=1 ["sub-key"]=1
   ["sub-key-size"]=1 ["sub-key"]=1 ["name"]=1 ["email"]=1 ["comment"]=1 ["passphrase"]=1 ["trust-level"]=1 ["key-id"]=1 ["file"]=1
   ["key-file"]=1 ["unlock-key"]=1 ["duration"]=1)
